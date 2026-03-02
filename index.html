@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SignSense AI - ISL ML Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-center p-6">
+    
+    <div class="max-w-5xl w-full space-y-6">
+        <div class="text-center">
+            <h1 class="text-5xl font-black text-orange-500 italic uppercase tracking-tighter">SignSense ISL</h1>
+            <p class="text-slate-400 font-bold uppercase tracking-widest text-xs mt-2">ML-Powered Indian Sign Language Interpreter</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div class="relative bg-black rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-800">
+                <video id="input_video" class="w-full h-auto scale-x-[-1]"></video>
+                <div class="absolute top-4 left-4 bg-orange-600 px-3 py-1 rounded-full text-[10px] font-bold animate-pulse">
+                    ML ENGINE ACTIVE
+                </div>
+                <div id="loading-spinner" class="absolute inset-0 flex items-center justify-center bg-slate-900 z-10">
+                    <p class="text-orange-500 font-bold animate-bounce">Loading AI Model...</p>
+                </div>
+            </div>
+
+            <div class="flex flex-col space-y-4">
+                <div class="bg-gradient-to-br from-orange-500 to-red-600 p-10 rounded-3xl shadow-xl border-b-8 border-orange-900 h-full flex flex-col justify-center">
+                    <h2 class="text-xs font-bold uppercase tracking-widest opacity-80">ISL Translation</h2>
+                    <p id="prediction" class="text-6xl font-black mt-2 italic tracking-tighter">READY</p>
+                </div>
+                
+                <div class="bg-slate-800 p-6 rounded-3xl border border-slate-700">
+                    <div class="flex items-center justify-between mb-4">
+                        <span class="text-orange-400 text-xs font-bold uppercase">Voice Output</span>
+                        <input type="checkbox" id="voiceToggle" class="w-6 h-6 accent-orange-500" checked>
+                    </div>
+                    <div class="text-[11px] text-slate-500 font-mono">
+                        Status: <span id="statusText" class="text-green-500">Connecting to Backend...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const predictionText = document.getElementById('prediction');
+        const statusText = document.getElementById('statusText');
+        const spinner = document.getElementById('loading-spinner');
+        const voiceToggle = document.getElementById('voiceToggle');
+        
+        let lastSpoken = "";
+        let isProcessing = false;
+
+        // Function to speak the translated text
+        function speak(text) {
+            if (!voiceToggle.checked || text === lastSpoken || text === "READY" || text === "...") return;
+            window.speechSynthesis.cancel();
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.rate = 0.9; // Slightly slower for clarity
+            window.speechSynthesis.speak(msg);
+            lastSpoken = text;
+        }
+
+        // Logic to process landmarks and send to Python Backend
+        async function onResults(results) {
+            spinner.style.display = 'none';
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0 && !isProcessing) {
+                isProcessing = true; // Prevents overlapping fetch requests
+                
+                const hand = results.multiHandLandmarks[0];
+                
+                // Flatten 21 landmarks into 63 values (x, y, z)
+                const flatLandmarks = [];
+                hand.forEach(lm => {
+                    flatLandmarks.push(lm.x, lm.y, lm.z);
+                });
+
+                try {
+                    const response = await fetch('http://localhost:5000/predict_isl', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ landmarks: flatLandmarks })
+                    });
+                    
+                    const data = await response.json();
+                    predictionText.innerText = data.prediction;
+                    statusText.innerText = "Backend Connected";
+                    statusText.className = "text-green-500";
+                    speak(data.prediction);
+                    
+                } catch (error) {
+                    predictionText.innerText = "OFFLINE";
+                    statusText.innerText = "Check app.py status";
+                    statusText.className = "text-red-500";
+                } finally {
+                    // Control the sampling rate (wait 300ms before next prediction)
+                    setTimeout(() => { isProcessing = false; }, 300);
+                }
+            } else if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                predictionText.innerText = "...";
+            }
+        }
+
+        // Initialize Mediapipe Hands
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1, // Start with 1 for simplicity, can change to 2 for complex ISL later
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults(onResults);
+
+        // Initialize Camera
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        camera.start();
+    </script>
+</body>
+</html>
